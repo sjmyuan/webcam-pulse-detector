@@ -4,7 +4,14 @@ import cv2
 import pylab
 import os
 import sys
+import requests
+import colorsys
+import scipy.signal
+from scipy import interpolate
+from pygame import mixer
 
+mixer.init()
+mixer.music.load('bugu.mp3')
 
 def resource_path(relative_path):
     """ Get absolute path to resource, works for dev and for PyInstaller """
@@ -26,8 +33,10 @@ class findFaceGetPulse(object):
         self.frame_out = np.zeros((10, 10))
         self.fps = 0
         self.buffer_size = 250
+        # self.buffer_size = 100
         #self.window = np.hamming(self.buffer_size)
         self.data_buffer = []
+        self.data_length=0
         self.times = []
         self.ttimes = []
         self.samples = []
@@ -50,6 +59,9 @@ class findFaceGetPulse(object):
 
         self.idx = 1
         self.find_faces = True
+        self.even_times=[]
+        self.interpolated=[]
+        self.emotion={}
 
     def find_faces_toggle(self):
         self.find_faces = not self.find_faces
@@ -84,7 +96,14 @@ class findFaceGetPulse(object):
         v2 = np.mean(subframe[:, :, 1])
         v3 = np.mean(subframe[:, :, 2])
 
-        return (v1 + v2 + v3) / 3.
+        # return (v1 + v2 + v3) / 3.
+
+        # hsvImg=cv2.cvtColor(subframe, cv2.COLOR_BGR2HSV)
+        # return np.mean(hsvImg[:,:,0])
+
+        hsv=colorsys.rgb_to_hsv(v3,v2,v1)
+        return hsv[0]
+
 
     def train(self):
         self.trained = not self.trained
@@ -131,7 +150,8 @@ class findFaceGetPulse(object):
                        (10, 50), cv2.FONT_HERSHEY_PLAIN, 1.25, col)
             cv2.putText(self.frame_out, "Press 'Esc' to quit",
                        (10, 75), cv2.FONT_HERSHEY_PLAIN, 1.25, col)
-            self.data_buffer, self.times, self.trained = [], [], False
+            # self.data_buffer, self.times, self.trained = [], [], False
+            self.data_length, self.data_buffer, self.times, self.trained = 0, [], [], False
             detected = list(self.face_cascade.detectMultiScale(self.gray,
                                                                scaleFactor=1.3,
                                                                minNeighbors=4,
@@ -174,6 +194,25 @@ class findFaceGetPulse(object):
         vals = self.get_subface_means(forehead1)
 
         self.data_buffer.append(vals)
+        self.data_length+=1
+        if self.data_length == self.buffer_size :
+            postData={ 'time':'1111',
+                    'user':'15929911324',
+                    'time_interval':'20',
+                    'sample_rate':'10',
+                    'label':'',
+                    'origin_data': self.data_buffer,
+                    'origin_time': [(self.t0+x)*1000 for x in self.times]}
+            try:
+                result=requests.post('http://localhost:8080/data',json=postData)
+                self.emotion=result.json()
+                if self.emotion['emotion_changed']:
+                    mixer.music.play()
+            except:
+                print 'send data error'
+            
+            self.data_length=0
+            
         L = len(self.data_buffer)
         if L > self.buffer_size:
             self.data_buffer = self.data_buffer[-self.buffer_size:]
@@ -187,14 +226,28 @@ class findFaceGetPulse(object):
             # print "ready"
 
             self.fps = float(L) / (self.times[-1] - self.times[0])
-            even_times = np.linspace(self.times[0], self.times[-1], L)
-            interpolated = np.interp(even_times, self.times, processed)
-            interpolated = np.hamming(L) * interpolated
-            interpolated = interpolated - np.mean(interpolated)
-            raw = np.fft.rfft(interpolated)
+            # self.even_times = np.linspace(self.times[0], self.times[-1], L)
+            sample_len=int((self.times[-1]-self.times[0])*200)
+            self.even_times = np.linspace(self.times[0], self.times[-1], sample_len,endpoint=False)
+            # func=interpolate.interp1d(self.times,processed,kind='cubic')
+            func=interpolate.splrep(self.times,processed)
+            # func=interpolate.interp1d(self.times,processed)
+            self.interpolated=interpolate.splev(self.even_times,func)
+            # self.interpolated = np.interp(self.even_times, self.times, processed)
+            # self.interpolated = np.hamming(L) * self.interpolated
+            # lowpass = scipy.signal.butter(1, 0.15, 'low')
+            # highpass = scipy.signal.butter(1, 0.05, 'high')
+            # self.interpolated=scipy.signal.filtfilt(*lowpass, x=self.interpolated)
+            # self.interpolated=scipy.signal.filtfilt(*highpass, x=self.interpolated)
+            band_low,band_high = scipy.signal.butter(1, [0.005,0.03],btype='band')
+            self.interpolated=scipy.signal.filtfilt(band_low,band_high, self.interpolated)
+
+            # self.interpolated = self.interpolated - np.mean(self.interpolated)
+            raw = np.fft.rfft(self.interpolated)
             phase = np.angle(raw)
             self.fft = np.abs(raw)
-            self.freqs = float(self.fps) / L * np.arange(L / 2 + 1)
+            # self.freqs = float(self.fps) / L * np.arange(L / 2 + 1)
+            self.freqs = float(200) / sample_len * np.arange(sample_len / 2 + 1)
 
             freqs = 60. * self.freqs
             idx = np.where((freqs > 50) & (freqs < 180))
@@ -231,9 +284,11 @@ class findFaceGetPulse(object):
             # self.bpms.append(bpm)
             # self.ttimes.append(time.time())
             if gap:
-                text = "(estimate: %0.1f bpm, wait %0.0f s)" % (self.bpm, gap)
+                # text = "(estimate: %0.1f bpm, wait %0.0f s)" % (self.bpm, gap)
+                text = "(wait %0.0f s)" % (gap)
             else:
-                text = "(estimate: %0.1f bpm)" % (self.bpm)
+                # text = "(estimate: %0.1f bpm,%0.1f fps,%0.1f bpm)" % (self.bpm,self.fps,self.emotion.get('heart_rate',0.0))
+                text = "(estimate: %0.1f bpm,%0.1f fps)" % (self.emotion.get('heart_rate',0.0),self.fps)
             tsize = 1
             cv2.putText(self.frame_out, text,
                        (x - w / 2, y), cv2.FONT_HERSHEY_PLAIN, tsize, col)

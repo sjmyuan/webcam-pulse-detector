@@ -49,7 +49,7 @@ class getPulseApp(object):
 
         self.cameras = []
         self.selected_cam = 0
-        for i in xrange(3):
+        for i in xrange(1):
             camera = Camera(camera=i)  # first camera by default
             if camera.valid or not len(self.cameras):
                 self.cameras.append(camera)
@@ -133,12 +133,14 @@ class getPulseApp(object):
         plotXY([[self.processor.times,
                  self.processor.samples],
                 [self.processor.freqs,
-                 self.processor.fft]],
-               labels=[False, True],
-               showmax=[False, "bpm"],
-               label_ndigits=[0, 0],
-               showmax_digits=[0, 1],
-               skip=[3, 3],
+                 self.processor.fft],
+                [self.processor.even_times,
+                 self.processor.interpolated]],
+               labels=[False, True,False],
+               showmax=[False, "bpm",False],
+               label_ndigits=[0, 0,0],
+               showmax_digits=[0, 1,0],
+               skip=[3, 3,3],
                name=self.plot_title,
                bg=self.processor.slices[0])
 
